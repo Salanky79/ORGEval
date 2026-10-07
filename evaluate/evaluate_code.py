@@ -10,7 +10,8 @@ from typing import Optional
 from evaluate._utils import (
     wltest_coloring_two,
     graph_generator,
-    check_color_equivalence, derive_adjacency
+    check_color_equivalence, derive_adjacency,
+    match_constraint_colors_pairwise
 )
 from evaluate.python_executor import PythonExecutor
 
@@ -45,7 +46,7 @@ def convert_to_lp(
     """
     # Create temporary directory to store LP files
     data_dir_name = data_dir.split("/")[-1]
-    temp_dir = f'temp_lp/{model_name}_{data_dir_name}_lp/'#tempfile.mkdtemp() #'/home/ziweizhu/ziwei/or_modeling_tianding/temp_lp/'
+    temp_dir = f'temp_lp/{model_name}_{data_dir_name}_lp/'
     os.makedirs(temp_dir, exist_ok=True)
     if problem_id is not None:
         lp_file_name = f"{problem_id}_model_{data_path.split('/')[-1].split('.')[0]}.lp"
@@ -60,12 +61,10 @@ def convert_to_lp(
     if verbose:
         print(f"Processing code for to write LP file at: {lp_file_path}")
 
-
     code_for_lp = process_code_for_lp(code, data_path, lp_file_path)
     if verbose:
         print(f"*" * 10, "Processed code", "*" * 10)
-        #print(code_for_lp)
-    # This is not necessary for RL training
+
     code_for_lp = ensure_imports(code_for_lp)
 
     os.makedirs(f"temp_code/{model_name}/", exist_ok=True)
@@ -74,8 +73,6 @@ def convert_to_lp(
 
     import subprocess
     result = subprocess.run(["python", f"temp_code/{model_name}/temp_exec_{problem_id}.py"], capture_output=True, text=True)
-    #print("Output:", result.stdout)
-    #print("Error:", result.stderr)  
 
     if os.path.exists(lp_file_path):
         with open(lp_file_path, "r") as f:
@@ -83,8 +80,6 @@ def convert_to_lp(
         return True, lp_content, lp_file_path
     else:
         return False, "LP file was not created due to error: " + result.stderr, None
-
-
 
 
 def store_sample(
@@ -98,66 +93,32 @@ def store_sample(
     output_dir="/outputs/bench4opt",
 ):
     """
-        Store the sample data in a JSON file for later evaluation and analysis
-
-    Args:
-        code: Gurobi Python code
-        problem_id: Sample ID (e.g., LP_001, MILP_002)
-        path: Sample file path
-        problem_class: Problem class (e.g., Network Flow)
-        domain: Application domain (e.g., Health Care, Transportation)
-        output_dir: Output directory, default is 'data_output'
+    Store the sample data in a JSON file for later evaluation and analysis
     """
-    # Create sample data dictionary
     sample_data = {
         "sample_id": problem_id,
         "sample_code": code,
         "sample_path": f"data/sample_{problem_id}.json",
         "reference_lp_path": reference_lp_path,
-        "problem_type": problem_id.split("_")[0],  # Extract problem type from ID (LP/MILP)
+        "problem_type": problem_id.split("_")[0],
         "is_equivalent": is_equivalent,
         "equivalence_error": equivalence_error,
         "problem_class": problem_class,
         "domain": domain,
-        # "code":,
-        # "reward":,
-        # "verification":
     }
 
-    # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
-
-    # Generate output file path, consistent with the path used in read_sample function
     output_file = os.path.join(output_dir, f"sample_{problem_id}.json")
 
-    # Save as JSON file
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(sample_data, f, ensure_ascii=False, indent=4)
 
     print(f"Sample {problem_id} saved to {output_file}")
 
 
-
-
 def evaluate_code_re(
     model_name: str, data_dir: str, code: str, data_path: str, reference_lp_path: str, verbose: bool = False, problem_id: Optional[int] = None
 ) -> dict:
-    """
-    Evaluate LLM-generated Gurobi Python code using check_lp_equivalence from equivalence_check.py
-
-    Args:
-        code: LLM-generated Gurobi Python code
-        data_path: Sample data path
-        reference_lp_path: Reference LP file path
-        verbose: Whether to print detailed information
-        problem_id: Optional problem ID for generating file names
-
-    Returns:
-        tuple: (code_eval_result, equivalence_eval_result)
-            code_eval_result: Code execution result dictionary
-            equivalence_eval_result: Equivalence check result dictionary
-    """
-    # Check if the reference LP file exists
     if not reference_lp_path or not os.path.exists(reference_lp_path):
         code_eval_result = {
             "success": False,
@@ -166,8 +127,6 @@ def evaluate_code_re(
         }
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
-
-    # Convert code to LP file
 
     code_success, code_result, lp_file_path = convert_to_lp(
         model_name, data_dir, code, data_path, verbose=verbose, problem_id=problem_id
@@ -182,9 +141,8 @@ def evaluate_code_re(
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
 
-    # Use check_lp_equivalence from equivalence_check.py for equivalence check
     start_time = time.time()
-    is_equivalent, error_msg,time_info = equivcheck.check_lp_equivalence(reference_lp_path, lp_file_path)
+    is_equivalent, error_msg, time_info = equivcheck.check_lp_equivalence(reference_lp_path, lp_file_path)
     end_time = time.time()
     total_equivalence_check_time = end_time - start_time
     equivalence_check_time = {
@@ -206,26 +164,9 @@ def evaluate_code_re(
     return code_eval_result, equivalence_eval_result, equivalence_check_time
 
 
-
 def evaluate_code_solver(
     model_name: str, data_dir: str, code: str, data_path: str, reference_lp_path: str, verbose: bool = False, problem_id: Optional[int] = None
 ) -> dict:
-    """
-    Evaluate LLM-generated Gurobi Python code using solver for equivalence check
-
-    Args:
-        code: LLM-generated Gurobi Python code
-        data_path: Sample data path
-        reference_lp_path: Reference LP file path
-        verbose: Whether to print detailed information
-        problem_id: Optional problem ID for generating file names
-
-    Returns:
-        tuple: (code_eval_result, equivalence_eval_result)
-            code_eval_result: Code execution result dictionary
-            equivalence_eval_result: Equivalence check result dictionary
-    """
-    # Check if the reference LP file exists
     if not reference_lp_path or not os.path.exists(reference_lp_path):
         code_eval_result = {
             "success": False,
@@ -234,8 +175,6 @@ def evaluate_code_solver(
         }
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
-
-    # Convert code to LP file
 
     code_success, code_result, lp_file_path = convert_to_lp(
         model_name, data_dir, code, data_path, verbose=verbose, problem_id=problem_id
@@ -250,9 +189,8 @@ def evaluate_code_solver(
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
 
-    # Use solver_evaluation for equivalence check
     start_time = time.time()
-    is_equivalent,msg,eval_time = solver_evaluation(reference_lp_path, lp_file_path)
+    is_equivalent, msg, eval_time = solver_evaluation(reference_lp_path, lp_file_path)
     end_time = time.time()
     total_equivalence_check_time = end_time - start_time
     equivalence_check_time = {
@@ -279,8 +217,8 @@ def solver_evaluation(lp_path1, lp_path2):
     env.start()
     
     try:
-        model1 = gp.read(lp_path1,env)
-        model2 = gp.read(lp_path2,env)
+        model1 = gp.read(lp_path1, env)
+        model2 = gp.read(lp_path2, env)
     except Exception as e:
         return False, f"Error reading LP file: {e}", 0
         
@@ -295,7 +233,6 @@ def solver_evaluation(lp_path1, lp_path2):
     except Exception as e:
         return False, f"Error optimizing model: {e}", 0
     
-    # Status mapping dictionary
     status_map = {
         gp.GRB.LOADED: "Model loaded but not solved",
         gp.GRB.OPTIMAL: "optimal",
@@ -314,7 +251,6 @@ def solver_evaluation(lp_path1, lp_path2):
         gp.GRB.USER_OBJ_LIMIT: "user objective limit"
     }
     
-    # Check reference model status
     if model1.status != gp.GRB.OPTIMAL:
         return False, f"reference model status: {status_map.get(model1.status, 'unknown status')}", 0
     
@@ -323,7 +259,6 @@ def solver_evaluation(lp_path1, lp_path2):
     except Exception as e:
         return False, f"cannot get reference model objective value: {e}", 0
     
-    # Check evaluated model status
     if model2.status == gp.GRB.OPTIMAL:
         try:
             obj2 = model2.getAttr("ObjVal")
@@ -342,26 +277,9 @@ def solver_evaluation(lp_path1, lp_path2):
     return eval_result, msg, eval_time
 
 
-
 def evaluate_code_ged(
     model_name: str, data_dir: str, code: str, data_path: str, reference_lp_path: str, verbose: bool = False, problem_id: Optional[int] = None
 ) -> dict:
-    """
-    Evaluate LLM-generated Gurobi Python code using solver for equivalence check
-
-    Args:
-        code: LLM-generated Gurobi Python code
-        data_path: Sample data path
-        reference_lp_path: Reference LP file path
-        verbose: Whether to print detailed information
-        problem_id: Optional problem ID for generating file names
-
-    Returns:
-        tuple: (code_eval_result, equivalence_eval_result)
-            code_eval_result: Code execution result dictionary
-            equivalence_eval_result: Equivalence check result dictionary
-    """
-    # Check if the reference LP file exists
     if not reference_lp_path or not os.path.exists(reference_lp_path):
         code_eval_result = {
             "success": False,
@@ -370,8 +288,6 @@ def evaluate_code_ged(
         }
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
-
-    # Convert code to LP file
 
     code_success, code_result, lp_file_path = convert_to_lp(
         model_name, data_dir, code, data_path, verbose=verbose, problem_id=problem_id
@@ -386,7 +302,6 @@ def evaluate_code_ged(
         equivalence_eval_result = {"success": False, "message": ""}
         return code_eval_result, equivalence_eval_result, ""
 
-    # Use solver_evaluation for equivalence check
     start_time = time.time()
     ged = calculate_code_ged(reference_lp_path, lp_file_path)
     end_time = time.time()
@@ -400,47 +315,29 @@ def evaluate_code_ged(
         "message": code_result,
         "lp_file_path": lp_file_path,
     }
-    
-
 
     return code_eval_result, ged, equivalence_check_time
 
 
 def calculate_ged(G1, G2):
-    """
-    Calculate the normalized Graph Edit Distance (GED) between two graphs.
-    
-    Args:
-        G1, G2: networkx graph objects with node and edge features
-        
-    Returns:
-        float: Normalized Graph Edit Distance
-    """
     def node_subst_cost(node1_data, node2_data):
-        """Node substitution cost: L1 distance between feature vectors"""
         return np.sum(np.abs(node1_data['feature'] - node2_data['feature']))
     
     def edge_subst_cost(edge1_data, edge2_data):
-        """Edge substitution cost: L1 distance between feature vectors"""
         return np.sum(np.abs(edge1_data['feature'] - edge2_data['feature']))
     
     def node_del_cost(node_data):
-        """Node deletion cost: fixed at 1"""
         return 1.0
     
     def edge_del_cost(edge_data):
-        """Edge deletion cost: fixed at 1"""
         return 1.0
     
     def node_ins_cost(node_data):
-        """Node insertion cost: fixed at 1"""
         return 1.0
     
     def edge_ins_cost(edge_data):
-        """Edge insertion cost: fixed at 1"""
         return 1.0
     
-    # Calculate original Graph Edit Distance
     ged = nx.graph_edit_distance(G1, G2,
                                node_subst_cost=node_subst_cost,
                                edge_subst_cost=edge_subst_cost,
@@ -449,32 +346,128 @@ def calculate_ged(G1, G2):
                                node_ins_cost=node_ins_cost,
                                edge_ins_cost=edge_ins_cost)
     
-    # Normalize the Graph Edit Distance using the maximum size of the two graphs
     max_size = max(len(G1.nodes) + len(G1.edges), len(G2.nodes) + len(G2.edges))
     normalized_ged = ged / max_size if max_size > 0 else 0
     
-    return 1-normalized_ged
+    return 1 - normalized_ged
 
-def calculate_code_ged(lp_path1,lp_path2):
+
+def calculate_code_ged(lp_path1, lp_path2):
     with gp.Env(empty=True) as env:
         env = gp.Env(empty=True)
         env.setParam("LogToConsole", 0)
         env.start()
-        model1 = gp.read(lp_path1,env)
-        model2 = gp.read(lp_path2,env)
+        model1 = gp.read(lp_path1, env)
+        model2 = gp.read(lp_path2, env)
         
-        # Standardize boundary constraints
         model1 = equivcheck.convert_boundary(model1)
         model1.write("model1_converted.lp")
         model2 = equivcheck.convert_boundary(model2)
         model2.write("model2_converted.lp")
 
-
-        # Generate bipartite graphs
         G1 = equivcheck.generate_bipartite(model1)
         G2 = equivcheck.generate_bipartite(model2)
-        # Calculate Graph Edit Distance
         dist = calculate_ged(G1, G2)
-        #print(dist)
     env.close()
     return dist
+
+
+def evaluate_code_m2_hybrid(
+    model_name: str,
+    data_dir: str,
+    code: str,
+    data_path: str,
+    reference_lp_path: str,
+    verbose: bool = False,
+    problem_id: Optional[int] = None,
+) -> dict:
+    """
+    Evaluate LLM-generated Gurobi Python code using Module 2 (M2) Hybrid Assessment Pipeline.
+    
+    Operations:
+        1. Operation 1: Converts LLM code + Sample Parameters into concrete LP Instance.
+        2. Operation 2: Extracts Node-Level WL-Test colors for constraints (V_c).
+        3. Operation 3: Fast-tracks matched nodes ("Identical"), routes unmatched nodes to Solver.
+    """
+    # Operation 1: Convert LLM code to LP file Instance
+    code_success, code_result, lp_file_path = convert_to_lp(
+        model_name,
+        data_dir,
+        code,
+        data_path,
+        verbose=verbose,
+        problem_id=problem_id,
+    )
+
+    if not code_success:
+        return {
+            "success": False,
+            "message": code_result,
+            "lp_file_path": "",
+            "m2_results": [],
+            "runtime": 0.0,
+        }
+
+    start_time = time.time()
+
+    try:
+        # Operation 2: Extract Bipartite Graph Features & Color Tensors
+        A1, var_feat1, cons_feat1 = graph_generator(reference_lp_path)
+        A2, var_feat2, cons_feat2 = graph_generator(lp_file_path)
+
+        (
+            color1,
+            color_cons1,
+            color_var1,
+            color2,
+            color_cons2,
+            color_var2,
+        ) = wltest_coloring_two(
+            cons_feat1, var_feat1, A1, cons_feat2, var_feat2, A2
+        )
+
+        # Fast-Filter: Pairwise matching on constraint node colors
+        matched_pairs, unmatched_c1, unmatched_c2 = match_constraint_colors_pairwise(
+            color_cons1, color_cons2
+        )
+
+        m2_results = list(matched_pairs)
+
+        # Operation 3: Routing unmatched constraint nodes to EquiCEval Solver
+        if len(unmatched_c1) > 0 and len(unmatched_c2) > 0:
+            is_opt, msg, eval_time = solver_evaluation(reference_lp_path, lp_file_path)
+
+            for i_idx, i in enumerate(unmatched_c1):
+                targets = [unmatched_c2[i_idx]] if i_idx < len(unmatched_c2) else unmatched_c2
+                for j in targets:
+                    label = "Contextually Equivalent" if is_opt else "Counterexample Found"
+                    m2_results.append(
+                        {
+                            "c_star_idx": i,
+                            "c_hat_idx": j,
+                            "label": label,
+                            "method": "EquiCEval_Solver",
+                            "solver_called": True,
+                            "message": msg,
+                        }
+                    )
+
+        total_time = time.time() - start_time
+
+        return {
+            "success": True,
+            "message": "Evaluation completed successfully",
+            "lp_file_path": lp_file_path,
+            "m2_results": m2_results,
+            "runtime": total_time,
+        }
+
+    except Exception as e:
+        total_time = time.time() - start_time
+        return {
+            "success": False,
+            "message": f"Error during hybrid evaluation: {str(e)}",
+            "lp_file_path": lp_file_path,
+            "m2_results": [],
+            "runtime": total_time,
+        }

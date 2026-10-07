@@ -7,6 +7,8 @@ import json
 import os
 import argparse
 
+from collections import defaultdict
+
 
 
 def graph_generator(ins_name):
@@ -322,3 +324,45 @@ def check_color_equivalence(color1,color2):
                 print('-----------An unmatched cluster occurs!---------')
                 return False
     return True
+
+def match_constraint_colors_pairwise(
+    color_cons1, color_cons2, precision=5
+):
+    """Tối ưu ghép cặp mã màu từ O(N^2) về O(N) nhờ Bảng băm (Hash Map)"""
+    num_c1 = len(color_cons1)
+    num_c2 = len(color_cons2)
+
+    # Bảng lưu trữ mã màu của GT: Key = Color Hash, Value = list các index
+    gt_color_map = defaultdict(list)
+
+    # 1. Quét GT - O(N)
+    for i in range(num_c1):
+        # Làm tròn vector màu để tạo Key chuẩn xác
+        color_key = tuple(torch.round(color_cons1[i], decimals=precision).tolist())
+        gt_color_map[color_key].append(i)
+
+    matched_pairs = []
+    unmatched_c1 = list(range(num_c1))
+    unmatched_c2 = []
+
+    # 2. Quét LLM - O(N)
+    for j in range(num_c2):
+        color_key = tuple(torch.round(color_cons2[j], decimals=precision).tolist())
+
+        # Tra cứu O(1) trong Dictionary
+        if color_key in gt_color_map and len(gt_color_map[color_key]) > 0:
+            matched_i = gt_color_map[color_key].pop(0)  # Lấy 1 dòng GT trùng màu
+            matched_pairs.append(
+                {
+                    "c_star_idx": matched_i,
+                    "c_hat_idx": j,
+                    "label": "Identical",
+                    "method": "ORGEval_WL_Coloring",
+                    "solver_called": False,
+                }
+            )
+            unmatched_c1.remove(matched_i)
+        else:
+            unmatched_c2.append(j)
+
+    return matched_pairs, unmatched_c1, unmatched_c2
